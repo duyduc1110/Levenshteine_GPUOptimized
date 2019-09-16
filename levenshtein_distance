@@ -1,0 +1,114 @@
+import os
+import time
+import numpy as np
+import math
+from numba import cuda, int32, config
+
+
+##New Lev
+
+@cuda.jit
+def duc_kernel2(desc, kw, rs):
+    row, col = cuda.grid(2)
+    #Define shared array
+    
+    if row < rs.shape[0] and col < rs.shape[1]:
+        #Define local array
+        desc_pick = desc[row]
+        for len_desc in range(desc_pick.shape[0]):
+            if desc_pick[len_desc] == -1:
+                break
+        kw_pick = kw[col]
+        for len_kw in range(kw_pick.shape[0]):
+            if kw_pick[len_kw] == -1:
+                break
+        lev_dis = cuda.local.array(shape = (x_lev, y_lev), dtype = int32)
+        #New lev
+        lev_dis[0,0] = 0
+        ##Pre load data 1st
+        for i in range(len_kw+1):
+            if i>0 and kw_pick[i-1] == -1:
+                break
+            else:
+                for j in range(len_desc+1):
+                    if j>0 and desc_pick[j-1] == -1:
+                        break
+                    if min(i, j) == 0:
+                        lev_dis[i, j] == max(i, j)
+                    #Set l_cost
+                    l_cost = 1 if desc_pick[i-1] == kw_pick[j-1] else 0
+                    if (i>1) and (j>1) and \
+                            (desc_pick[i-1] == kw_pick[j-2]) and \
+                            (desc_pick[i-2] == kw_pick[j-1]):
+                        lev_dis[i, j] = min(lev_dis[i-1, j] + 1, \
+                                lev_dis[i, j-1] + 1, \
+                                lev_dis[i-1, j-1] + l_cost, \
+                                lev_dis[i-2, j-2]) 
+                    else:
+                        lev_dis[i, j] = min(lev_dis[i-1, j] + 1, \
+                                lev_dis[i, j-1] + 1, \
+                                lev_dis[i-1, j-1] + l_cost)
+        
+        rs[row, col] = lev_dis[len_kw, len_desc]
+
+
+if __name__ == '__main__':
+    s_time = time.time()
+    #Read file
+    with open("C:/Users/TTEK/Desktop/desc.txt") as f:
+        desc = f.read().split("\n")
+    with open("C:/Users/TTEK/Desktop/keyword.txt") as f:
+        kw = f.read().split("\n")
+    result_kw = []
+    dim_x = len(desc)
+    dim_y = len(kw)
+    
+
+    #Create desc & keyword arrays
+    max_len_desc = max(len(i) for i in desc)
+    x_lev = max_len_desc+1 
+    desc_arr = np.full((len(desc), max_len_desc), -1, np.int)
+    max_len_kw = max(len(i) for i in kw)
+    y_lev = max_len_kw+1
+    kw_arr = np.full((len(kw), max_len_kw), -1, np.int)
+
+    #Desc & Keyword arrays into number
+    for i in range(len(desc_arr)):
+        for j in range(len(desc[i])):
+            desc_arr[i,j] = ord(desc[i][j])
+    for i in range(len(kw)):
+        for j in range(len(kw[i])):
+            kw_arr[i,j] = ord(kw[i][j])
+    
+    #Copy arrays to device
+    desc_global_mem = cuda.to_device(desc_arr)
+    kw_global_mem = cuda.to_device(kw_arr)
+    rs_global_mem = cuda.device_array((dim_x, dim_y))
+
+    #Configure the blocks
+    
+    threadsperblock = (32, 32)
+    blockspergrid = (math.ceil(dim_x/32), math.ceil(dim_y/32))
+    #Version 1
+    #duc_kernel[blockspergrid, threadsperblock](desc_global_mem, kw_global_mem, rs_global_mem)
+    
+    #Version 2
+    duc_kernel2[blockspergrid, threadsperblock](desc_global_mem, kw_global_mem, rs_global_mem)
+
+    #Copy result to host
+    rs = rs_global_mem.copy_to_host()
+    print(time.time() - s_time)
+    for rss in rs:
+        match_kw_index = np.where(rss == rss.min())
+        tmp = []
+        # Append all result
+        # for i in match_kw_index[0]:
+        #     tmp.append(kw[i])
+        #
+        i = match_kw_index[0][0]
+        tmp.append(kw[i])
+        result_kw.append(tmp)
+    with open("C:/Users/TTEK/Desktop/map_keyword.txt", "w") as f:
+        for item in result_kw:
+            f.write("%s\n" %item)
+    
